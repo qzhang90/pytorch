@@ -787,7 +787,7 @@ def ltc_trivial(gm: torch.fx.GraphModule, example_inputs):
 
 @create_backend
 def torchxla_trivial(subgraph):
-    # print(f"torchxla_trivial graph:\n{subgraph.model.code}")
+    print(f"torchxla_trivial graph:\n{subgraph.model.code}")
     return subgraph.model
 
 

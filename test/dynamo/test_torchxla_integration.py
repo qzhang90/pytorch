@@ -5,6 +5,8 @@ import os
 import unittest
 
 import torch
+from functorch.compile import aot_module_simplified
+from torch._dynamo import disable
 
 has_torch_xla = True
 try:
@@ -14,6 +16,7 @@ except ImportError:
 
 import torch.utils._pytree as pytree
 from torch import fx, nn
+from functorch.compile import make_boxed_compiler
 
 
 class BasicModule(nn.Module):
@@ -47,7 +50,20 @@ class LinearModule(nn.Module):
         return self.linear(x)
 
     def get_random_inputs(self):
-        return (torch.randn(10),)
+        return (torch.randn(2, 10),)
+
+class MaxPoolModule(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.conv = nn.Conv2d(3, 6, kernel_size=3, stride=2)
+        self.pool = nn.MaxPool2d(3, stride=2)
+
+    def forward(self, x):
+        x = self.conv(x)
+        return self.pool(x)
+
+    def get_random_inputs(self):
+        return (torch.randn(2, 3, 10, 10),)
 
 
 class ModuleInplaceUpdate(nn.Module):
@@ -89,12 +105,15 @@ def should_run_torchxla_tests():
     gpu_device_specified = int(os.environ.get("GPU_NUM_DEVICES", "0")) > 0
     return has_torch_xla and gpu_device_specified
 
-
-def make_reuse_graph_test(module_class, niter=100):
-    @unittest.skipIf(
+def maybe_skip(f):
+    return unittest.skipIf(
         not should_run_torchxla_tests(),
         "Skip the tests since torch_xla is not available or XLA devices are not specified",
-    )
+    )(f)
+
+
+def make_reuse_graph_test(module_class, niter=100):
+    @maybe_skip
     def test_wrapper(self):
         import torch_xla.core.xla_model as xm
 
@@ -141,9 +160,60 @@ def make_reuse_graph_test(module_class, niter=100):
 
     return test_wrapper
 
+def training_compiler(gm, example_inputs):
+    @make_boxed_compiler
+    @disable
+    def fw_compiler(graph, inputs, *args, **kwargs):
+        return integration.extract_compiled_graph(graph, inputs)
+
+    @make_boxed_compiler
+    @disable
+    def bw_compiler(graph, inputs, *args, **kwargs):
+        return integration.extract_compiled_graph(graph, inputs)
+
+    return aot_module_simplified(gm, fw_compiler=fw_compiler, bw_compiler=bw_compiler)
+
+
+def model_iter_fn_train(mod, inputs):
+    outputs = mod(*inputs)
+    loss = outputs.mean()
+    loss.backward()
+
+    param_list = list(mod.parameters())
+    return [param.grad for param in param_list]
+
+def make_training_test(model_cls):
+    @maybe_skip
+    def test_wrapper(self):
+        import torch_xla.core.xla_model as xm
+        import torch_xla
+        xla_dev = xm.xla_device()
+        model = model_cls()
+        inputs = model.get_random_inputs()
+
+        model = model.to(device=xla_dev)
+        inputs = tuple(inp.to(device=xla_dev) for inp in inputs)
+
+        # do baseline
+        baseline_model = copy.deepcopy(model)
+        baseline_inputs = copy.deepcopy(inputs)
+        expected_output = model_iter_fn_train(baseline_model, baseline_inputs)
+
+        compiler = training_compiler
+        optimize_ctx = torch._dynamo.optimize(compiler, nopython=False)
+        optimized_model_iter_fn = optimize_ctx(model_iter_fn_train)
+
+        actual_output = optimized_model_iter_fn(model, inputs)
+        print(f"expected_output:\n{expected_output}\nactual_output:\n{actual_output}")
+        assert allclose(expected_output, actual_output)
+
+    return test_wrapper
 
 class TorchXLAReuseGraphTest(unittest.TestCase):
     test_basic = make_reuse_graph_test(BasicModule)
     test_matmul = make_reuse_graph_test(MatmulModule)
     test_linear = make_reuse_graph_test(LinearModule)
     test_inplace_update = make_reuse_graph_test(ModuleInplaceUpdate)
+
+    test_training_linear = make_training_test(LinearModule)
+    test_training_maxpool = make_training_test(MaxPoolModule)

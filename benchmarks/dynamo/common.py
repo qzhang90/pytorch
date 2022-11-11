@@ -238,7 +238,7 @@ def print_summary(filename):
 def tensor_is_on_xla(tensors):
     if not isinstance(tensors, (tuple, list)):
         tensors = [tensors]
-    return any(map(lambda x: x.device.type == "xla", tensors))
+    return any(map(lambda x: x.device.type == "xla" if isinstance(x, torch.Tensor) else False, tensors))
 
 def timed(model, model_iter_fn, example_inputs, times=1, return_result=False):
     synchronize()
@@ -247,16 +247,17 @@ def timed(model, model_iter_fn, example_inputs, times=1, return_result=False):
     # Dont collect outputs to correctly measure timing
     for _ in range(times):
         result = model_iter_fn(model, example_inputs, collect_outputs=False)
-        if tensor_is_on_xla(result):
+
+        # instead of calling sync on result_list, we should call mark_step.
+        # In training case, result_list may be empty, but we want to sync
+        # all the pending computations.
+        if tensor_is_on_xla(example_inputs):
             # If the model is on XLA device, it's possible that after running
             # the model, the computation is accumulated but not performed yet.
             # Flush all the accumulated computations to make the time measurement
             # accurate.
-            import torch_xla
-            result_list = result
-            if not isinstance(result, (tuple, list)):
-                result_list = [result]
-            torch_xla._XLAC._xla_sync_multi(result_list, [])
+            import torch_xla.core.xla_model as xm
+            xm.mark_step()
         synchronize()
     t1 = time.perf_counter()
     return (t1 - t0, result) if return_result else t1 - t0
@@ -411,6 +412,7 @@ def speedup_experiment(args, model_iter_fn, model, example_inputs, **kwargs):
             # on randomize_input. Otherwise the first call using the
             # inputs will incur high penalty then the next one.
             maybe_mark_step(args)
+            # print(f"Iter {rep}, Inputs is:\n{inputs}")
 
             # interleave the runs to handle frequency scaling and load changes
             timings[rep, 0], expected_output = timed(
@@ -423,6 +425,7 @@ def speedup_experiment(args, model_iter_fn, model, example_inputs, **kwargs):
             timings[rep, 1], actual_output = timed(
                 model, frozen_model_iter_fn, inputs, return_result=True
             )
+            # print(f"rep {rep}\nexpected_output:\n{expected_output}\nactual_output:\n{actual_output}")
             if should_check_result:
                 is_correct = is_correct and same(expected_output, actual_output)
 
@@ -1873,6 +1876,10 @@ def run(runner, args, original_dir=None):
                 if override_model == "linear":
                     from test_model import LinearModel
                     model = LinearModel()
+                    example_inputs = model.get_example_inputs()
+                elif override_model == "conv":
+                    from test_model import ConvModel
+                    model = ConvModel()
                     example_inputs = model.get_example_inputs()
                 elif override_model:
                     raise RuntimeError(f"Unexpected override model {override_model}")

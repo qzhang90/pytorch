@@ -18,3 +18,17 @@ class LinearModel(nn.Module):
 
     def get_example_inputs(self):
         return (torch.randn(2, 10),)
+
+class ConvModel(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.conv = nn.Conv2d(3, 6, kernel_size=3, stride=2)
+        self.pool = nn.MaxPool2d(kernel_size=3, stride=2)
+
+    def forward(self, x):
+        x = self.conv(x)
+        x = self.pool(x)
+        return x
+
+    def get_example_inputs(self):
+        return (torch.rand(2, 3, 10, 10),)
