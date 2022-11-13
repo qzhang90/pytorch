@@ -5,8 +5,8 @@ import functools
 import inspect
 import re
 import types
+import typing
 from abc import ABCMeta
-from typing import Any, List, Mapping
 
 import numpy as np
 from functorch.experimental.ops import PyOperator
@@ -89,7 +89,7 @@ from .user_defined import UserDefinedClassVariable, UserDefinedObjectVariable
 @dataclasses.dataclass
 class GraphArg:
     source: Source
-    example: Any
+    example: typing.Any
     is_unspecialized: bool
 
     def __post_init__(self):
@@ -341,7 +341,8 @@ class VariableBuilder:
                 value,
                 guards=make_guards(GuardBuilder.FUNCTION_MATCH),
             )
-        elif value in (List, Mapping):
+        elif isinstance(value, typing._SpecialGenericAlias):
+            # typing.List, typing.Mapping, etc.
             return TypingVariable(
                 value,
                 guards=make_guards(GuardBuilder.ID_MATCH),
