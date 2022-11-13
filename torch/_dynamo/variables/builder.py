@@ -6,7 +6,7 @@ import inspect
 import re
 import types
 from abc import ABCMeta
-from typing import Any, List
+from typing import Any, List, Mapping
 
 import numpy as np
 from functorch.experimental.ops import PyOperator
@@ -341,7 +341,7 @@ class VariableBuilder:
                 value,
                 guards=make_guards(GuardBuilder.FUNCTION_MATCH),
             )
-        elif value is List:
+        elif value in (List, Mapping):
             return TypingVariable(
                 value,
                 guards=make_guards(GuardBuilder.ID_MATCH),
