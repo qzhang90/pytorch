@@ -858,6 +858,33 @@ TORCH_IMPL_FUNC(index_add_cpu_out)
     if (numel == 0) {
       return;
     }
+    if (dim == (result.dim() - 1) && alpha.equal(1.0) &&
+        index_contig.scalar_type() == ScalarType::Long &&
+        // Heuristic value that scatter_add has higher performance.
+        result.numel() >= (4 * at::internal::GRAIN_SIZE / at::get_num_threads())) {
+      // Check whether result and source are matched apart from the dimension dim.
+      // Note that the broadcast case:
+      // source.select(dim, i) is broadcast for result.select(dim, index_data[i])
+      // The broadcast case is not applicable for scatter_add
+      auto check_sizes = [](IntArrayRef a, IntArrayRef b, int64_t dim) -> bool {
+        if (a.size() != b.size())
+          return false;
+        int64_t ndim = a.size();
+        for (int64_t i = ndim - 1; i >= 0; --i) {
+          if (i != dim && a[i] != b[i] )
+            return false;
+        }
+        return true;
+      };
+
+      if (check_sizes(result.sizes(), source.sizes(), dim)) {
+        auto ep_index = index_contig.expand(source.sizes());
+        result.scatter_add_(dim, ep_index, source);
+        return;
+      };
+
+    }
+
     auto selfSlice = result.select(dim, 0);
     auto sourceSlice = source.select(dim, 0);
     auto self_stride_bytes = result.stride(dim) * elementSize(result.scalar_type());
